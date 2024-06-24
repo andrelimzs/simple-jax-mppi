@@ -60,16 +60,16 @@ def train_dynamics(f, dyn_state, batch_size, epochs, horizon, key):
                 x = dyn.apply(params, x, u)
                 Y_hat.append(x)
             Y_hat = jnp.concat(Y_hat)
-            return (jnp.linalg.norm(Y_hat - Y)**2).mean() / horizon
+            return ((Y_hat.flatten() - Y.flatten())**2).mean()
 
         key, _key = jax.random.split(key)
-        x0 = jax.random.uniform(_key, (batch_size, 6), minval=-2, maxval=2)
+        x0 = jax.random.uniform(_key, (batch_size, 6), minval=-5, maxval=5)
 
         U, Y = [], []
         x = deepcopy(x0)
         for _ in range(horizon):
             key, _key = jax.random.split(key)
-            u = jax.random.uniform(_key, (batch_size, 2))
+            u = jax.random.uniform(_key, (batch_size, 2), minval=-15, maxval=15)
             y = jax.vmap(f, in_axes=(0,0))(x,u)
             x = y
             
@@ -82,13 +82,10 @@ def train_dynamics(f, dyn_state, batch_size, epochs, horizon, key):
 
         loss, grads = jax.value_and_grad(dynamics_loss)(dyn_state.params, x0,U,Y)
         dyn_state = dyn_state.apply_gradients(grads=grads)
-
         # jax.experimental.io_callback(lambda l : print(f"loss = {l:0.2e}"), None, loss)
-
         return (dyn_state, key), loss
     
     (dyn_state, key), losses = jax.lax.scan(step, (dyn_state, key), None, epochs)
-        
     return dyn_state, losses
 
 
@@ -129,11 +126,11 @@ if __name__ == "__main__":
         tx=optax.adam(learning_rate=3e-4)
     )
 
-    # key, _key = jax.random.split(key)
-    # horizon = 10
-    # start_time = time.time()
-    # dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 1000, 1000, horizon, _key)
-    # print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}ms")
+    key, _key = jax.random.split(key)
+    horizon = 2
+    start_time = time.time()
+    dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 10000, 10000, horizon, _key)
+    print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}ms")
 
     # Precompile
     initial_control = jnp.zeros((kw['T'], kw['action_dim']))
