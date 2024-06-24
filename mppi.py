@@ -72,27 +72,42 @@ def mppi(
             v = initial_control + control_noise
         elif distribution == "previous":
             v = control_noise
+
+        position = trajectory[:,0:2]
+        velocity = trajectory[:,3:5]
+        psi = trajectory[:,2:3]
+        rate = trajectory[:,5:6]
         
-        pos_error = jnp.linalg.norm(trajectory[:,0:2] - goal[0:2].reshape(1,-1), axis=-1)
-        vel_error = jnp.linalg.norm(trajectory[:,2:4] - goal[2:4].reshape(1,-1), axis=-1)
+        pos_error = position - goal[0:2].reshape(1,-1)
+        vel_error = velocity - goal[3:5].reshape(1,-1)
+        
+        target_heading = jnp.arctan2(pos_error[:,1:2], pos_error[:,0:1])
+        heading_error = wrap2pi(psi - target_heading)
+
+        position_cost = jnp.linalg.norm(pos_error, axis=-1)
+        velocity_cost = jnp.linalg.norm(vel_error, axis=-1)
+        heading_cost = jnp.linalg.norm(heading_error, axis=-1)
 
         obs_pos = jnp.array([-1,-0.5]).reshape(1,-1)
-        dist_to_obstacle = jnp.linalg.norm(trajectory[:,0:2] - obs_pos, axis=-1) - 0.2
-        obstacle_cost = 1e6 * (dist_to_obstacle <= 0)
+        dist_to_obstacle = jnp.linalg.norm(position - obs_pos, axis=-1) - 0.2
+        obstacle_cost = (dist_to_obstacle <= 0)
 
         time_cost = 1e-2 * ((pos_error > 1e-1) & (vel_error > 1e-2))
 
         running_cost = (
-            + 1e-1 * (pos_error[:-1])
-            + 1e-1 * (vel_error[:-1])
-            + obstacle_cost[:-1]
-            + time_cost[:-1]
-            + gamma * jnp.vecdot(initial_control[:-1], v[1:] / sigma, axis=-1)
-        )
+            + 2 * (position_cost[:-1])
+            + 1 * (velocity_cost[:-1])
+            + 1e-1 * heading_cost[:-1]
+            + 1e6 * obstacle_cost[:-1]
+            # + time_cost[:-1]
+            + gamma * jnp.vecdot(initial_control[:-1], v[1:] / sigma.reshape(1,-1), axis=-1)
+        ) * ((position_cost > 0.05) | (velocity_cost > 0.1))[:-1]
         terminal_cost = 10 * (
-            pos_error[-1] + vel_error[-1] * jnp.exp(-pos_error[-1]**2)
-            + obstacle_cost[-1]
+            + 2 * position_cost[-1]
+            + velocity_cost[-1] * jnp.exp(-position_cost[-1]**2)
+            + 1e6 * obstacle_cost[-1]
         )
+
         return terminal_cost + jnp.sum(running_cost)
 
     def rollout(state, initial_control, T, distribution, key):
@@ -103,7 +118,6 @@ def mppi(
         # Simulate trajectory and cost under perturbations
         _, trajectory = jax.lax.scan(dynamics_step, state, control)
         rollout_cost = compute_cost(trajectory, initial_control, control_perturbations, distribution)
-
         return trajectory, control_perturbations, rollout_cost
 
     def compute_optimal(initial_control, control_perturbations, rollout_cost):

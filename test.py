@@ -14,21 +14,44 @@ from flax.training.train_state import TrainState
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from mppi import mppi, Dynamics
+from mppi import mppi
+
 
 def doubleintegrator2d(state, control):
-    x,y,vx,vy = state
-    ax,ay = control
+    x,y,psi, vx,vy,r = state
+    F,M = control
+    ax = F * jnp.cos(psi)
+    ay = F * jnp.sin(psi)
     cd = 0.05
-    return jnp.array([vx, vy, ax-cd*vx, ay-cd*vy])
+    return jnp.array([
+        vx,
+        vy,
+        r,
+        ax - cd*vx,
+        ay - cd*vy,
+        M,
+    ])
 
-@partial(jax.jit, static_argnames=['f', 'epochs', 'horizon'])
-def train_dynamics(f, dyn_state, epochs, horizon, key):
+def wrap2pi(x):
+    return jnp.arctan2(jnp.sin(x), jnp.cos(x))
+
+class Dynamics(nn.Module):
+    state_dim: int
+
+    @nn.compact
+    def __call__(self, x, a):
+        x = jnp.concat([x,a], axis=-1)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.state_dim)(x)
+        return x
+
+@partial(jax.jit, static_argnames=['f', 'batch_size', 'epochs', 'horizon'])
+def train_dynamics(f, dyn_state, batch_size, epochs, horizon, key):
     def step(carry, unused):
         dyn_state, key = carry
-
-        def l2_loss(x, alpha):
-            return alpha * (x**2).mean()
 
         def dynamics_loss(params, x, U, Y):
             """Minimize the N horizon prediction loss"""
@@ -37,13 +60,10 @@ def train_dynamics(f, dyn_state, epochs, horizon, key):
                 x = dyn.apply(params, x, u)
                 Y_hat.append(x)
             Y_hat = jnp.concat(Y_hat)
-            # L2_regularization = sum(
-            #     l2_loss(w, alpha=1e5) for w in jax.tree.leaves(params)
-            # )
-            return (jnp.linalg.norm(Y_hat - Y)**2).mean() / horizon # + L2_regularization
+            return (jnp.linalg.norm(Y_hat - Y)**2).mean() / horizon
 
         key, _key = jax.random.split(key)
-        x0 = jax.random.uniform(_key, (batch_size, 4), minval=-2, maxval=2)
+        x0 = jax.random.uniform(_key, (batch_size, 6), minval=-2, maxval=2)
 
         U, Y = [], []
         x = deepcopy(x0)
@@ -66,8 +86,7 @@ def train_dynamics(f, dyn_state, epochs, horizon, key):
         # jax.experimental.io_callback(lambda l : print(f"loss = {l:0.2e}"), None, loss)
 
         return (dyn_state, key), loss
-
-    batch_size = 256
+    
     (dyn_state, key), losses = jax.lax.scan(step, (dyn_state, key), None, epochs)
         
     return dyn_state, losses
@@ -81,44 +100,50 @@ if __name__ == "__main__":
     from IPython.core import ultratb
     sys.excepthook = ultratb.FormattedTB(color_scheme='Linux', call_pdb=False)
 
+    # Configure MPPI
+    goal = np.array([0.,0.,0.,0.,0.,0.])
+    kw = {
+        'state_dim' : 6,
+        'action_dim' : 2,
+        'dt' : 1/50,
+        'control_min' : jnp.array([-10.0, -10.0]),
+        'control_max' : jnp.array([ 10.0,  10.0]),
+        'T' : 100,
+        'N' : 5_000,
+        # Inverse temp : Higher values are more unweighted 
+        'la' : 10,
+        # Sigma : Control distribution covariance
+        'sigma' : jnp.array([5.0, 10.0]),
+        # Alpha : Ratio of rollouts to sample from uncontrolled distribution
+        # 'alpha' : 0.99, # gamma = la * (1 - alpha)
+        # Gamma : Control cost parameter
+        'gamma' : 0.1,
+    }
+
     # Train dynamcis
-    dyn = Dynamics()
+    dyn = Dynamics(kw['state_dim'])
     key, _key = jax.random.split(key)
     dyn_state = TrainState.create(
         apply_fn=dyn.apply,
-        params=dyn.init(_key, jnp.zeros(4), jnp.zeros(2)),
+        params=dyn.init(_key, jnp.zeros(kw['state_dim']), jnp.zeros(kw['action_dim'])),
         tx=optax.adam(learning_rate=3e-4)
     )
 
-    key, _key = jax.random.split(key)
-    horizon = 10
-    dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 10_000, horizon, _key)
-    print(f"Dynamics final loss = {losses[-1]:0.1e}")
-
-    # Configure MPPI
-    goal = np.array([0.,0.,0.,0.])
-    kw = {
-        'state_dim' : 4,
-        'action_dim' : 2,
-        'dt' : 0.1,
-        'control_min' : jnp.array([-1.0, -1.0]),
-        'control_max' : jnp.array([ 1.0,  1.0]),
-        'T' : 200,
-        'N' : 5000,
-        'la' : 1.0,
-        'sigma' : jnp.array([0.05, 0.05]),
-        'alpha' : 0.99, # gamma = la * (1 - alpha)
-    }
+    # key, _key = jax.random.split(key)
+    # horizon = 10
+    # start_time = time.time()
+    # dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 1000, 1000, horizon, _key)
+    # print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}ms")
 
     # Precompile
     initial_control = jnp.zeros((kw['T'], kw['action_dim']))
-    state = np.array([-2.,-1.,0.,0.])
+    state = np.array([-2.,-1.,np.deg2rad(30),0,0,0])
     key, _key = jax.random.split(key)
     first_control, first_trajectory = mppi(dyn, dyn_state, state, goal, initial_control, _key, **kw)
 
     """MPPI"""
     start_time = time.time()
-    initial_state = np.array([-2.,-1.,0.,0.])
+    initial_state = np.array([-2.,-1.,np.deg2rad(30),0,0,0])
     state = initial_state.copy()
     trajectory = []
     control = []
@@ -136,8 +161,9 @@ if __name__ == "__main__":
         control.append(optimal_control[0])
 
         # Termination criteria
-        if np.linalg.norm(state[0:2] - goal[0:2]) < 0.05 and np.linalg.norm(state[2:4] - goal[2:4]) < 1e-2:
+        if np.linalg.norm(state[0:2] - goal[0:2]) < 0.05 and np.linalg.norm(state[3:5] - goal[3:5]) < 0.1:
             break
+    
     else:
         print(f"Timed out at {i+1}")
 
@@ -147,6 +173,9 @@ if __name__ == "__main__":
 
     """XY Plot"""
     fig, ax = plt.subplots(1,1, dpi=300)
+
+    # # First trajectory
+    # ax.plot(first_trajectory[:,0], first_trajectory[:,1], 'k--')
 
     # Closed-loop trajectory
     vel_norm = jnp.linalg.norm(optimal_trajectory[:,2:4], axis=-1)
@@ -160,24 +189,37 @@ if __name__ == "__main__":
     plt.savefig("xy.jpg")
 
     """Control Plot"""
-    fig, ax = plt.subplots(3,2, figsize=(12,8), dpi=200)
+    fig, ax = plt.subplots(3,3, figsize=(12,8), dpi=200)
     t = np.arange(len(optimal_trajectory)) * kw['dt']
     ax[0,0].plot(t, optimal_trajectory[:,0])
-    ax[1,0].plot(t, optimal_trajectory[:,2])
-    ax[2,0].plot(t, optimal_control[:,0])
+    ax[1,0].plot(t, optimal_trajectory[:,1])
+    ax[2,0].plot(t, (optimal_trajectory[:,2]) * np.rad2deg(1))
 
     ax[0,0].set_ylabel("x (m)")
-    ax[1,0].set_ylabel("vx (m/s)")
-    ax[2,0].set_ylabel("ax (m/s)")
+    ax[1,0].set_ylabel("y (m)")
+    ax[2,0].set_ylabel("psi (deg)")
     ax[2,0].set_xlabel("t (s)")
 
-    ax[0,1].plot(t, optimal_trajectory[:,1])
-    ax[1,1].plot(t, optimal_trajectory[:,3])
-    ax[2,1].plot(t, optimal_control[:,1])
+    ax[0,1].plot(t, optimal_trajectory[:,3])
+    ax[1,1].plot(t, optimal_trajectory[:,4])
+    ax[2,1].plot(t, wrap2pi(optimal_trajectory[:,5]) * np.rad2deg(1))
 
-    ax[0,1].set_ylabel("y (m)")
+    ax[0,1].set_ylabel("vx (m/s)")
     ax[1,1].set_ylabel("vy (m/s)")
-    ax[2,1].set_ylabel("ay (m/s)")
+    ax[2,1].set_ylabel("r (deg/s)")
     ax[2,1].set_xlabel("t (s)")
+    
+    ax[0,2].plot(t, optimal_control[:,0])
+    ax[1,2].plot(t, wrap2pi(optimal_control[:,1]) * np.rad2deg(1))
+
+    pos_error = jnp.linalg.norm(optimal_trajectory[:,0:2] - goal[0:2].reshape(1,-1), axis=-1)
+    vel_error = jnp.linalg.norm(optimal_trajectory[:,3:5] - goal[3:5].reshape(1,-1), axis=-1)
+    ax[2,2].plot(t, pos_error)
+    ax[2,2].plot(t, vel_error)
+
+    ax[0,2].set_ylabel("F (m/s2)")
+    ax[1,2].set_ylabel("M (deg/s2)")
+    ax[2,2].set_ylabel("Errors")
+    ax[2,2].set_xlabel("t (s)")
 
     plt.savefig("plot.jpg")
