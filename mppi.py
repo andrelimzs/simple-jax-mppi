@@ -9,24 +9,17 @@ import optax
 from flax import linen as nn
 from flax.training.train_state import TrainState
 
-class Dynamics(nn.Module):
-    @nn.compact
-    def __call__(self, x, a):
-        x = jnp.concat([x,a], axis=-1)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(4)(x)
-        return x
 
-@partial(jax.jit, static_argnames=['dyn', 'state_dim', 'action_dim', 'dt', 'T', 'N', 'la', 'alpha'])
+def wrap2pi(x):
+    return jnp.arctan2(jnp.sin(x), jnp.cos(x))
+
+@partial(jax.jit, static_argnames=['dyn', 'state_dim', 'action_dim', 'dt', 'T', 'N', 'la', 'gamma'])
 def mppi(
     dyn, dyn_state,
     initial_state, goal, initial_control,
     key, state_dim, action_dim,
     dt, control_min, control_max,
-    T, N, la, sigma, alpha,
+    T, N, la, sigma, gamma,
 ):
     """
     Arguments
@@ -47,6 +40,7 @@ def mppi(
             Controls how tightly peaked the optimal distribution is
             Higher values are closer to an unweighted average
         sigma : covariance of low-level controller
+        gamma : Control cost parameter
         alpha : Parameter that tradeoffs base distribution between 
             uncontrolled dynamics and previous control sequence.
             0 corresponds to base distribution
@@ -57,7 +51,8 @@ def mppi(
         optimal_trajectory : Trajectory predicted from dynamics and optimal control
     """
     # Control cost parameter
-    gamma = la * (1 - alpha)
+    # gamma = la * (1 - alpha)
+    alpha = 1 - gamma / la 
 
     def dynamics_step(state, control):
         """Predict future state x_t+1 from current state x_t and control u_t"""
