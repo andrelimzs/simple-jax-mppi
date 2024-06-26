@@ -111,8 +111,7 @@ if __name__ == "__main__":
         'la' : 10,
         # Sigma : Control distribution covariance
         'sigma' : jnp.array([5.0, 10.0]),
-        # Alpha : Ratio of rollouts to sample from uncontrolled distribution
-        # 'alpha' : 0.99, # gamma = la * (1 - alpha)
+        # 'sigma' : jnp.array([0.05, 0.1]),
         # Gamma : Control cost parameter
         'gamma' : 0.1,
     }
@@ -129,8 +128,8 @@ if __name__ == "__main__":
     key, _key = jax.random.split(key)
     horizon = 2
     start_time = time.time()
-    dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 10000, 10000, horizon, _key)
-    print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}ms")
+    dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 2048, 10000, horizon, _key)
+    print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}s")
 
     # Precompile
     initial_control = jnp.zeros((kw['T'], kw['action_dim']))
@@ -177,13 +176,18 @@ if __name__ == "__main__":
     # Closed-loop trajectory
     vel_norm = jnp.linalg.norm(optimal_trajectory[:,2:4], axis=-1)
     ax.scatter(optimal_trajectory[:,0], optimal_trajectory[:,1], c=vel_norm)
+    # ax.quiver(
+    #     optimal_trajectory[:,0], optimal_trajectory[:,1],
+    #     optimal_trajectory[:,3], optimal_trajectory[:,4],
+    #     vel_norm[:]
+    # )
 
     # Goal & Obstacle
     ax.add_patch(plt.Circle(goal, 0.05, color='tab:orange', fill=False))
     ax.add_patch(plt.Circle((-1.0,-0.5), 0.2, color='k', fill=False))
 
     ax.axis("equal")
-    plt.savefig("xy.jpg")
+    plt.savefig("plots/xy.jpg")
 
     """Control Plot"""
     fig, ax = plt.subplots(3,3, figsize=(12,8), dpi=200)
@@ -219,4 +223,4 @@ if __name__ == "__main__":
     ax[2,2].set_ylabel("Errors")
     ax[2,2].set_xlabel("t (s)")
 
-    plt.savefig("plot.jpg")
+    plt.savefig("plots/control.jpg")
