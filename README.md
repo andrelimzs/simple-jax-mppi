@@ -1,10 +1,28 @@
-# jax-mppi
+# simple-jax-mppi
 A simple implementation of Model Predictive Path Integral (MPPI) control in JAX. `jit` compilation allows for $30 - 100\times$ speedups over pytorch implementations. The speedup is particularly noticeable for neural network dynamics.
+
+## Getting Started
+To install with pip
+```
+pip install -r requirements.txt
+```
+
+To install with conda
+```
+conda env create -f environment.yaml
+```
+
+To run example
+```
+python test.py
+```
 
 ## Model Predictive Path Intgral (MPPI) Control
 ### Background
 For a general system
-$$x_{t+1} = F(x_t, v_t)$$
+```math
+x_{t+1} = F(x_t, v_t)
+```
 with state $x_t \in \mathbb{R}^n$ and input $v_t \in \mathbb{R}^m$, assume that $v_t$ represents the output of a low-level controller described by
 $$v_t \sim \mathcal{N}(u_t, \bar \Sigma)$$
 
