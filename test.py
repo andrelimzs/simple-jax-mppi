@@ -4,10 +4,13 @@ import jax.numpy as jnp
 import numpy as np
 from functools import partial
 import time
+from dataclasses import dataclass
 from copy import deepcopy
+import pickle
 
 import flax
 import optax
+import tyro
 from flax import linen as nn
 from flax.training.train_state import TrainState
 
@@ -16,6 +19,14 @@ import seaborn as sns
 
 from mppi import mppi
 
+@dataclass
+class Args:
+    train_dynamics: bool = False
+    """train a dynamics model"""
+    dynamics_horizon: int = 2
+    """prediction horizon to train the dynamics model on"""
+    model_path: str = "model/dynamics.p"
+    """location to save/load the dynamics network"""
 
 def doubleintegrator2d(state, control):
     x,y,psi, vx,vy,r = state
@@ -41,9 +52,9 @@ class Dynamics(nn.Module):
     @nn.compact
     def __call__(self, x, a):
         x = jnp.concat([x,a], axis=-1)
-        x = nn.Dense(256)(x)
+        x = nn.Dense(64)(x)
         x = nn.relu(x)
-        x = nn.Dense(256)(x)
+        x = nn.Dense(64)(x)
         x = nn.relu(x)
         x = nn.Dense(self.state_dim)(x)
         return x
@@ -90,6 +101,8 @@ def train_dynamics(f, dyn_state, batch_size, epochs, horizon, key):
 
 
 if __name__ == "__main__":
+    args = tyro.cli(Args)
+
     key = jax.random.PRNGKey(time.time_ns())
 
     # Colorize output
@@ -111,7 +124,6 @@ if __name__ == "__main__":
         'la' : 10,
         # Sigma : Control distribution covariance
         'sigma' : jnp.array([5.0, 10.0]),
-        # 'sigma' : jnp.array([0.05, 0.1]),
         # Gamma : Control cost parameter
         'gamma' : 0.1,
     }
@@ -125,11 +137,20 @@ if __name__ == "__main__":
         tx=optax.adam(learning_rate=3e-4)
     )
 
-    key, _key = jax.random.split(key)
-    horizon = 2
-    start_time = time.time()
-    dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 2048, 10000, horizon, _key)
-    print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}s")
+    # (Re)train the dynamics network
+    if args.train_dynamics:
+        start_time = time.time()
+        key, _key = jax.random.split(key)
+        dyn_state, losses = train_dynamics(doubleintegrator2d, dyn_state, 2048, 100_000, args.dynamics_horizon, _key)
+        print(f"Dynamics final loss = {losses[-1]:0.1e} in {time.time() - start_time:0.0f}s")
+        
+        with open(args.model_path, "wb") as f:
+            pickle.dump(dyn_state.params, f)
+    
+    # Load the dynamics network
+    else:
+        with open(args.model_path, "rb") as f:
+            dyn_state = dyn_state.replace(params=pickle.load(f))
 
     # Precompile
     initial_control = jnp.zeros((kw['T'], kw['action_dim']))
