@@ -1,0 +1,10 @@
+numpy==1.26
+jax[cuda12]==0.4.30
+torch==2.0.1
+flax==0.8.5
+gymnasium[mujoco]==0.29.1
+optax==0.2.3
+tyro==0.8.5
+matplotlib
+seaborn
+IPython
